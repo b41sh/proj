@@ -1,7 +1,7 @@
 use flate2::read::GzDecoder;
 use std::env;
 use std::fs::File;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use tar::Archive;
 
@@ -95,19 +95,47 @@ fn build_sqlite_from_source() -> Result<(), Box<dyn std::error::Error>> {
         "{}/sqlite-version-3.46.0",
         format!("{}/PROJSRC/sqlite", out_path.display())
     );
+    let target = env::var("TARGET")?;
+    let host = env::var("HOST")?;
 
-    let include_path = format!("{}/include", &src_dir);
-    let lib_path = format!("{}/lib", &src_dir);
-
-    let configure_command = Command::new("./configure")
-        .arg(format!("--prefix={}", &src_dir)) // 替换成你的实际 lib_path
+    let mut configure_command = Command::new("./configure");
+    configure_command
+        .arg(format!("--prefix={}", &src_dir))
+        .arg("--disable-tcl")
+        .env("CFLAGS", "-D_LARGEFILE64_SOURCE")
         .current_dir(&src_dir)
         .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .output()?;
+        .stderr(Stdio::inherit());
+    if target != host && target == "aarch64-unknown-linux-musl" {
+        let output = Command::new("which")
+            .arg("aarch64-linux-musl-gcc")
+            .output()?;
+        let gcc_path = Path::new(std::str::from_utf8(&output.stdout)?.trim())
+            .parent()
+            .unwrap()
+            .to_str()
+            .unwrap();
+        let cc = format!("{}/aarch64-linux-musl-gcc", gcc_path);
+        let cxx = format!("{}/aarch64-linux-musl-g++", gcc_path);
+        let ld = format!("{}/aarch64-linux-musl-ld", gcc_path);
+        let ar = format!("{}/aarch64-linux-musl-ar", gcc_path);
+        let as_ = format!("{}/aarch64-linux-musl-as", gcc_path);
+        let ranlib = format!("{}/aarch64-linux-musl-ranlib", gcc_path);
+        //          - { target: aarch64-unknown-linux-gnu, runner: ARM64 }
+        configure_command
+            .arg(format!("--host={}", target))
+            .env("CC", cc)
+            .env("CXX", cxx)
+            .env("LD", ld)
+            .env("AR", ar)
+            .env("AS", as_)
+            .env("RANLIB", ranlib);
+    }
 
-    if !configure_command.status.success() {
-        return Err("Failed to configure SQLite".into());
+    //dbg!(configure_command.clone());
+    let configure_output = configure_command.output()?;
+    if !configure_output.status.success() {
+        return Err("Failed to configure SQLite:".into());
     }
 
     let make_command = Command::new("make")
@@ -130,7 +158,8 @@ fn build_sqlite_from_source() -> Result<(), Box<dyn std::error::Error>> {
     if !make_install_command.status.success() {
         return Err("Failed to install SQLite".into());
     }
-
+    let include_path = format!("{}/include", &src_dir);
+    let lib_path = format!("{}/lib", &src_dir);
     println!("cargo:rustc-link-search=native={}", lib_path);
     println!("cargo:rustc-link-lib=static=sqlite3");
     println!("cargo:include={}", include_path);
