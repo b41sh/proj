@@ -1,7 +1,8 @@
 use flate2::read::GzDecoder;
 use std::env;
 use std::fs::File;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use tar::Archive;
 
 const MINIMUM_PROJ_VERSION: &str = "9.4.0";
@@ -16,34 +17,34 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         build_from_source()?
     } else {
         pkg_config::Config::new()
-        .atleast_version(MINIMUM_PROJ_VERSION)
-        .probe("proj")
-        .map(|pk| {
-            eprintln!("found acceptable libproj already installed at: {:?}", pk.link_paths[0]);
-            if cfg!(feature = "network") {
-                // Generally, system proj installations have been built with tiff support
-                // allowing for network grid interaction. If this proves to be untrue
-                // could we try to determine some kind of runtime check and fall back
-                // to building from source?
-                eprintln!("assuming existing system libproj installation has network (tiff) support");
-            }
-            if let Ok(val) = &env::var("_PROJ_SYS_TEST_EXPECT_BUILD_FROM_SRC") {
-                if val != "0" {
-                    panic!("for testing purposes: existing package was found, but should not have been");
+            .atleast_version(MINIMUM_PROJ_VERSION)
+            .probe("proj")
+            .map(|pk| {
+                eprintln!("found acceptable libproj already installed at: {:?}", pk.link_paths[0]);
+                if cfg!(feature = "network") {
+                    // Generally, system proj installations have been built with tiff support
+                    // allowing for network grid interaction. If this proves to be untrue
+                    // could we try to determine some kind of runtime check and fall back
+                    // to building from source?
+                    eprintln!("assuming existing system libproj installation has network (tiff) support");
                 }
-            }
+                if let Ok(val) = &env::var("_PROJ_SYS_TEST_EXPECT_BUILD_FROM_SRC") {
+                    if val != "0" {
+                        panic!("for testing purposes: existing package was found, but should not have been");
+                    }
+                }
 
-            // Tell cargo to tell rustc to link the system proj
-            // shared library.
-            println!("cargo:rustc-link-search=native={:?}", pk.link_paths[0]);
-            println!("cargo:rustc-link-lib=proj");
+                // Tell cargo to tell rustc to link the system proj
+                // shared library.
+                println!("cargo:rustc-link-search=native={:?}", pk.link_paths[0]);
+                println!("cargo:rustc-link-lib=proj");
 
-            pk.include_paths[0].clone()
-        })
-        .or_else(|err| {
-            eprintln!("pkg-config unable to find existing libproj installation: {err}");
-            build_from_source()
-        })?
+                pk.include_paths[0].clone()
+            })
+            .or_else(|err| {
+                eprintln!("pkg-config unable to find existing libproj installation: {err}");
+                build_from_source()
+            })?
     };
 
     #[cfg(feature = "buildtime_bindgen")]
@@ -82,6 +83,93 @@ fn generate_bindings(include_path: std::path::PathBuf) -> Result<(), Box<dyn std
     Ok(())
 }
 
+fn build_sqlite_from_source() -> Result<(), Box<dyn std::error::Error>> {
+    let path = "PROJSRC/sqlite-version-3.46.0.tar.gz";
+    let out_path = PathBuf::from(env::var("OUT_DIR").unwrap());
+    let tar_gz = File::open(path)?;
+    let tar = GzDecoder::new(tar_gz);
+    let mut archive = Archive::new(tar);
+    archive.unpack(out_path.join("PROJSRC/sqlite"))?;
+
+    let src_dir = format!(
+        "{}/sqlite-version-3.46.0",
+        format!("{}/PROJSRC/sqlite", out_path.display())
+    );
+    let target = env::var("TARGET")?;
+    let host = env::var("HOST")?;
+
+    let mut configure_command = Command::new("./configure");
+    configure_command
+        .arg(format!("--prefix={}", &src_dir))
+        .arg("--disable-tcl")
+        .env("CFLAGS", "-D_LARGEFILE64_SOURCE")
+        .current_dir(&src_dir)
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit());
+    if target != host && target == "aarch64-unknown-linux-musl" {
+        let output = Command::new("which")
+            .arg("aarch64-linux-musl-gcc")
+            .output()?;
+        let gcc_path = Path::new(std::str::from_utf8(&output.stdout)?.trim())
+            .parent()
+            .unwrap()
+            .to_str()
+            .unwrap();
+        let cc = format!("{}/aarch64-linux-musl-gcc", gcc_path);
+        let cxx = format!("{}/aarch64-linux-musl-g++", gcc_path);
+        let ld = format!("{}/aarch64-linux-musl-ld", gcc_path);
+        let ar = format!("{}/aarch64-linux-musl-ar", gcc_path);
+        let as_ = format!("{}/aarch64-linux-musl-as", gcc_path);
+        let ranlib = format!("{}/aarch64-linux-musl-ranlib", gcc_path);
+        //          - { target: aarch64-unknown-linux-gnu, runner: ARM64 }
+        configure_command
+            .arg(format!("--host={}", target))
+            .env("CC", cc)
+            .env("CXX", cxx)
+            .env("LD", ld)
+            .env("AR", ar)
+            .env("AS", as_)
+            .env("RANLIB", ranlib);
+    }
+
+    //dbg!(configure_command.clone());
+    let configure_output = configure_command.output()?;
+    if !configure_output.status.success() {
+        return Err("Failed to configure SQLite:".into());
+    }
+
+    let make_command = Command::new("make")
+        .current_dir(&src_dir)
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .output()?;
+
+    if !make_command.status.success() {
+        return Err("Failed to compile SQLite".into());
+    }
+
+    let make_install_command = Command::new("make")
+        .arg("install")
+        .current_dir(&src_dir)
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .output()?;
+
+    if !make_install_command.status.success() {
+        return Err("Failed to install SQLite".into());
+    }
+    let include_path = format!("{}/include", &src_dir);
+    let lib_path = format!("{}/lib", &src_dir);
+    println!("cargo:rustc-link-search=native={}", lib_path);
+    println!("cargo:rustc-link-lib=static=sqlite3");
+    println!("cargo:include={}", include_path);
+
+    env::set_var("DEP_SQLITE3_INCLUDE", include_path);
+    env::set_var("DEP_SQLITE3_LIB_DIR", lib_path);
+
+    Ok(())
+}
+
 // returns the path of "include" for the built proj
 fn build_from_source() -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
     eprintln!("building libproj from source");
@@ -93,7 +181,7 @@ fn build_from_source() -> Result<std::path::PathBuf, Box<dyn std::error::Error>>
             );
         }
     }
-
+    build_sqlite_from_source()?;
     let path = "PROJSRC/proj-9.4.0.tar.gz";
     let out_path = PathBuf::from(env::var("OUT_DIR").unwrap());
     let tar_gz = File::open(path)?;
