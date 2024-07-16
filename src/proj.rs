@@ -216,10 +216,21 @@ fn transform_epsg(
     let to_c = CString::new(to).map_err(ProjCreateError::ArgumentNulError)?;
     let proj_area = unsafe { proj_area_create() };
     area_set_bbox(proj_area, area);
+
+    println!("\n\n------11111-----ctx={:?}", ctx);
+    println!("\n----from_c={:?}  to_c={:?}   proj_area={:?}", from_c, to_c, proj_area);
+
+
     let ptr = result_from_create(ctx, unsafe {
         proj_create_crs_to_crs(ctx, from_c.as_ptr(), to_c.as_ptr(), proj_area)
     })
     .map_err(|e| ProjCreateError::ProjError(e.message(ctx)))?;
+
+    println!("\n-----222222------ptr={:?}", ptr);
+
+
+
+
     // Normalise input and output order to Lon, Lat / Easting Northing by inserting
     // An axis swap operation if necessary
     let normalised = unsafe {
@@ -228,6 +239,13 @@ fn transform_epsg(
         proj_destroy(ptr);
         normalised
     };
+
+
+    println!("\n-----333333------normalised={:?}", normalised);
+
+
+
+
     Ok(Proj {
         c_proj: normalised,
         ctx,
@@ -588,6 +606,11 @@ impl Proj {
         to: &str,
         area: Option<Area>,
     ) -> Result<Proj, ProjCreateError> {
+        println!("\n\n\n-------0000000----from={:?}", from);
+        println!("------to={:?}", to);
+        println!("------area={:?}", area);
+
+
         let ctx = unsafe { proj_context_create() };
         transform_epsg(ctx, from, to, area)
     }
@@ -1485,3 +1508,4 @@ mod test {
         assert!(name.contains("Europe"));
     }
 }
+

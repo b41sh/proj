@@ -131,6 +131,10 @@ pub(crate) unsafe extern "C" fn network_open(
     out_error_string: *mut c_char,
     ud: *mut c_void,
 ) -> *mut PROJ_NETWORK_HANDLE {
+
+    println!("\n-----55555----url={:?}", url);
+
+
     match _network_open(
         pc,
         url,
@@ -146,6 +150,8 @@ pub(crate) unsafe extern "C" fn network_open(
         #[allow(clippy::ptr_as_ptr)]
         Err(e) => {
             let err_string = e.to_string();
+            println!("\n\n------55555----err={:?}", e);
+            println!("------55555----err_strirng={:?}", err_string);
             out_error_string.copy_from_nonoverlapping(err_string.as_ptr().cast(), err_string.len());
             out_error_string.add(err_string.len()).write(0);
             ptr::null_mut() as *mut PROJ_NETWORK_HANDLE
@@ -210,6 +216,7 @@ unsafe fn _network_open(
     let err_string = "";
     out_error_string.copy_from_nonoverlapping(err_string.as_ptr().cast(), err_string.len());
     out_error_string.add(err_string.len()).write(0);
+    println!("\n\n------66666----out_err_strirng={:?}", out_error_string);
     Ok(opaque)
 }
 
@@ -387,3 +394,4 @@ pub(crate) fn set_network_callbacks(ctx: *mut PJ_CONTEXT) -> i32 {
         )
     }
 }
+
